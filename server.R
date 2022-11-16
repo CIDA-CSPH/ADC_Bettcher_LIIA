@@ -1,0 +1,305 @@
+# Alexandria Jensen
+# 23 September 2019
+
+# This is the server portion of a shiny app for the LIIA RECap database
+
+# Shiny app package dependencies
+list.of.packages<-c('base','tidyverse','plyr','magrittr','qwraps2','tableone',
+                    'shiny','shinyjs','shinythemes','REDCapExporter')
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages, repos='http://cran.us.r-project.org')
+
+library(shiny)
+library(shinyjs)
+library(shinythemes)
+library(tidyverse)
+library(plyr)
+library(magrittr)
+library(qwraps2)
+library(tableone)
+library(REDCapExporter)
+library(xtable)
+
+
+source("helpers.R") # Have the helper functions available
+
+shinyServer(function(input,output,session) {
+  # ======= BUILDING THE DATASET FROM REDCAP ======= #
+  
+  # Use the REDCap API token input and create initial dataset
+  LIIA_data<-reactive({
+    
+    
+    # Add dependency on the update button (only update when clicked)
+    input$goBtn
+    
+    observe({
+      shinyjs::hide("consentdate")
+      
+      if(input$type_report=="Consent Metrics")
+        shinyjs::show("consentdate")
+    })
+    
+    # Create the initial dataset
+    getData(as.character(input$API_token))
+    
+    
+    
+  })
+  
+  # ======= MANIPULATE THE DATA ======= #
+  
+  # The dataset to show/summarize, which is the raw data after filtering based
+  # on user inputs
+  LIIA_abb<-reactive({
+    
+    # Add dependency on the update button (only update when button is clicked)
+    input$updateBtn
+    
+    data<-LIIA_data()
+    
+    ####working ideas
+    # data = getData("")
+    # data %>%
+    #   filter(with_inelig_yesno == 1 & consent_scrnfail == 0) %>%
+    #   select(study_id)
+    # colnames(data)
+    
+    # Add all the filters to the data based on the user inputs
+    # Wrap in an isolate() so that the data won't update every time an input is changed
+    isolate({
+  
+      # Filter based on radio button chosen
+      # Upcoming Appts: details the study participants due for a survey (6, 12, or 18 months) or a 2yr f/u visit
+      # Also distinguishes those who are overdue for a 2yr f/u appt (> 3 months past due date)
+      if(input$type_report=="Upcoming Appts"){
+        `data` %<>%
+          select("study_id","demo_first_name","demo_last_name","status","next_appt_final","next_appt_date_format") %>%
+          na.exclude("next_appt_final") %>%
+          filter(status == "Actively Enrolled") %>%
+          arrange(factor(next_appt_final,levels=c("Overdue 2 Year Follow Up","2 Year Follow Up","6 Month Survey","12 Month Survey","18 Month Survey")),
+                  lubridate::mdy(next_appt_date_format))
+      }
+      
+      # Creates a list of every study participant who is actively enrolled in the study
+      if(input$type_report=="Active Enrollment"){
+        data %<>%
+          select("study_id","demo_first_name","demo_last_name","status") %>%
+          filter(status == "Actively Enrolled")
+      }
+      
+      #Creates a table of ids and consent times/form
+      if(input$type_report=="Consent Metrics"){
+        
+        #put data into a matrix for output with totals
+        all_data=
+          data %>%
+          select("study_id","consent_vers_agg","consent_date_agg") %>%
+          arrange(consent_date_agg) %>%
+          filter(consent_date_agg > input$consentdate | is.na(consent_date_agg)) %>%
+          dplyr::rename("id" =study_id, "First Consent Version" = consent_vers_agg, "First Consent Date" = consent_date_agg) %>%
+          as.matrix()
+        
+        colnames(all_data) = NULL
+        
+        #get a row total, including NAs
+        row_total =
+          data %>%
+          select("study_id","consent_vers_agg","consent_date_agg") %>%
+          filter(consent_date_agg > input$consentdate | is.na(consent_date_agg)) %>%
+          nrow()
+        
+        #get a row total of NAs
+        row_total_na =
+          data %>%
+          select("study_id","consent_vers_agg","consent_date_agg") %>%
+          filter(is.na(consent_date_agg)) %>%
+          nrow()
+        
+        #put totals into a matrix
+        total_matrix = matrix(c("Total Rows:", "Total NA Rows:",  "", "ID", row_total,  row_total_na, "", "First Consent Version","","","","First Consent Date"), nrow = 4, ncol = 3)
+        
+        colnames(total_matrix)= c(" ", " ", " ")
+        #combine matrices
+        data = rbind(total_matrix, all_data)
+        
+      }
+      
+      # Creates a table of actively enrolled participants (or those who have completed the study) with their
+      # status within the study, whether it be at baseline or 2yr f/u
+      if(input$type_report=="Participant Visit Stats"){
+        data %<>%
+          select("study_id","status","base_class","base_visit_comp","fu_class", "withd_consen_yesno", "consent_yesno","with_inelig_choice")
+        
+        
+        ##Creating the table for output
+        visit_table <- data.frame(matrix(data=NA,nrow=15,ncol=2))
+        colnames(visit_table) <- c("","Number Participants")
+        visit_table[,1] <- c("Baseline","-Screened, No LP","-Screened, LP, Not Finished","-Baseline Visit Completed",
+                             " ","Follow-Up","-F/U Started, Not Complete","-F/U Completed w/ LP","-F/U Completed w/o LP"," ",
+                             "Withdrawls","-Entire Study Withdrawls","-Post-Baseline Withdrawls","-Post-Baseline Study Consent Withdrawn","-Post-Baseline Study LTFU ")
+      
+        #Baseline
+        visit_table[1,2] <- " "
+        #Screened, No LP
+        visit_table[2,2] <- as.numeric(table(data[data$status=="Actively Enrolled" | data$status=="Completed Study",]$base_class)["Screened, No LP"])
+        #Screened, LP Not Finished
+        visit_table[3,2] <- as.numeric(table(data[data$status=="Actively Enrolled" | data$status=="Completed Study",]$base_class)["Screened, LP, Not Finished"])
+        #Baseline Visit Completed
+        visit_table[4,2] <- as.numeric(table(data$base_visit_comp)["Yes"])
+        
+        visit_table[5,2] <- " "
+        #Followup
+        visit_table[6,2] <- " "
+        #F/U Started, Not Complete
+        visit_table[7,2] <- as.numeric(table(data[data$status=="Actively Enrolled" | data$status=="Completed Study",]$fu_class)["F/U Started, Not Complete"])
+        #F/U compelted w/ LP
+        visit_table[8,2] <- as.numeric(table(data[data$status=="Actively Enrolled" | data$status=="Completed Study",]$fu_class)["F/U Completed w/ LP"])
+        #F/U compelted w/o LP
+        visit_table[9,2] <- as.numeric(table(data[data$status=="Actively Enrolled" | data$status=="Completed Study",]$fu_class)["F/U Completed w/o LP"])
+        
+        visit_table[10,2] <- " "
+        #Withdrawn
+        visit_table[11,2] <- " "
+        #Entire Study Withdrawls - Didn't complete, not active, consented, and withdrew
+        visit_table[12,2] <- as.numeric(table(data[data$status %notin% c("Actively Enrolled","Completed Study") & data$consent_yesno=="1",]$with_inelig_choice)["1"])
+        #Post- Baseline
+        visit_table[13,2] <- as.numeric(table(data[data$status %notin% c("Actively Enrolled","Completed Study") & data$consent_yesno=="1" & data$with_inelig_choice == "1",]$base_class)["Baseline Visit Completed"])
+        #Consent Withdrawn
+        visit_table[14,2] <- as.numeric(table(data[data$status %notin% c("Actively Enrolled","Completed Study") & data$consent_yesno=="1" & data$withd_consen_yesno=="1",]$base_class)["Baseline Visit Completed"])
+        #Lost to F/U
+        visit_table[15,2] <- as.numeric(table(data[data$status %notin% c("Actively Enrolled","Completed Study") & data$consent_yesno=="1" & data$withd_consen_yesno=="0",]$base_class)["Baseline Visit Completed"])       
+        
+        data <- visit_table
+        
+      }
+      
+      # Creates a list of the baseline and f/u status for each participant wither actively enrolled
+      # or who completed the study
+      if(input$type_report=="Baseline and Follow-Up Status"){
+        data %<>%
+          filter(status=="Actively Enrolled" | status == "Completed Study") %>%
+          select("study_id","demo_first_name","demo_last_name","base_class","fu_class") %>%
+          drop_na("base_class")
+      }
+      
+      # Creates a list of study participants due for concensus conference for either their baseline
+      # or f/u visit
+      if(input$type_report=="Consensus Conference"){
+        data %<>%
+          filter(status=="Actively Enrolled" | status == "Completed Study") %>%
+          select("study_id","demo_first_name","demo_last_name","cons_conf_due") %>%
+          na.exclude("cons_conf_due")
+      }
+      
+      # Creates a list of study participants' responses to the optional measures questions within the
+      # informed consent
+      if(input$type_report=="Optional Measures"){
+        data %<>%
+          select("demo_first_name","demo_last_name","demo_phone","demo_email",
+                 "consent_audio_rp","consent_audio_me","consent_future","consent_b12_results") %>%
+          na.exclude("consent_audio_rp","consent_audio_me","consent_future","consent_b12_results") %>%
+          dplyr::rename(First_Name=demo_first_name,Last_Name=demo_last_name,
+                 Phone_Number=demo_phone,Email_Address=demo_email,
+                 Audio_Research_Purposes_Consent=consent_audio_rp,
+                 Audio_Medical_Education_Consent=consent_audio_me,
+                 Future_Study_Contact=consent_future,
+                 B12_Results_Contact=consent_b12_results)
+      }
+      
+      # Creates a list of all subjects who screen failed, were ineligible, withdrew, or were withdrawn
+      # from the study, with the reason detailed
+      if(input$type_report=="Patient Drop Out/Ineligibility"){
+        data %<>%
+          select("study_id","demo_first_name","demo_last_name","status","comments") %>%
+          filter(status %notin% c("Participant death","Actively Enrolled","Completed Study",NA))
+      }
+      
+      # Creates a list of study participants who died
+      if(input$type_report=="Patient Death"){
+        data %<>%
+          select("study_id","demo_first_name","demo_last_name","status","death_date") %>%
+          filter(status == "Participant death")
+      }
+      
+      # For actively enrolled participants or those who completed the study, a table 1 of study
+      # demographics
+      if(input$type_report=="Demographics"){
+        
+        data %<>%
+          #filter(status=="Actively Enrolled"  | status == "Completed Study") %>%
+          filter(base_class=="Baseline Visit Completed" & data$consent_yesno=="1") %>%
+          select("curr_age","demo_sex","demo_ethnicity","demo_handedness","demo_educ_yrs", "demo_race_final")
+          # select("curr_age","demo_sex","demo_ethnicity","demo_handedness","demo_educ_yrs",
+          #        "demo_race_Asian","demo_race_Black","demo_race_Cauc","demo_race_PacIsl",
+          #        "demo_race_NatAmer","demo_race_Unkn","demo_race_NoAns")
+          
+          
+        ## Vector of variables to summarize - overall
+        # myVars<-c("curr_age","demo_educ_yrs","demo_ethnicity","demo_handedness",
+        #                 "demo_race_Asian","demo_race_Black","demo_race_Cauc","demo_race_PacIsl",
+        #                 "demo_race_NatAmer","demo_race_Unkn","demo_race_NoAns")
+        
+        myVars<-c("curr_age","demo_educ_yrs","demo_ethnicity","demo_handedness", "demo_race_final")
+        
+        ## Create a TableOne object
+        tabone_overall<-CreateTableOne(data=data,vars=myVars,test=FALSE, strata = "demo_sex", addOverall = T)
+        tabone_overall_frame<-print(tabone_overall,showAllLevels=TRUE,test=FALSE)
+        data = as.data.frame(tabone_overall_frame) %>% select(-"Prefer not to Answer")
+        data=cbind(c("n","Current Age (mean (SD))", "Education Years (mean (SD))","Ethnicity (%)","","","","Handedness (%)","","","", "Race (%)","","","",""),data)
+        rownames(data) <- NULL
+        colnames(data)<-c("Variable Name","Variable Level","Overall","Female Sex","Male Sex")
+        
+        
+        ## Create a TableOne object
+        # tabone_overall<-CreateTableOne(vars=myVars,data=data,test=FALSE)
+        # tabone_overall_frame<-print(tabone_overall,showAllLevels=TRUE,test=FALSE)
+        # row_nms_overall<-rownames(tabone_overall_frame)
+        # tabone_overall_final<-cbind(row_nms_overall,as.data.frame(tabone_overall_frame))
+        # rownames(tabone_overall_final)<-c()
+        # names(tabone_overall_final)[names(tabone_overall_final)=="row_nms"]<-""
+        # 
+        # tabone_bysex<-CreateTableOne(vars=myVars,strata="demo_sex",data=data,test=FALSE)
+        # tabone_bysex_frame<-print(tabone_bysex,showAllLevels=TRUE,test=FALSE)
+        # row_nms_bysex<-rownames(tabone_bysex_frame)
+        # tabone_bysex_final<-cbind(row_nms_bysex,as.data.frame(tabone_bysex_frame))
+        # rownames(tabone_bysex_final)<-c()
+        # names(tabone_bysex_final)[names(tabone_bysex_final)=="row_nms"]<-""
+        # 
+        # 
+        # tabone_combined<-cbind(tabone_overall_final,tabone_bysex_final[,3:4])
+        # colnames(tabone_combined)<-c("Variable Name","Variable Level","Overall","Female Sex","Male Sex")
+        # tabone_combined[,1]<-c("n","Current Age (mean (SD))","Education Years (mean (SD))",
+        #                         "Ethnicity (%)","","","","Handedness (%)","","","","Asian Race (%)",
+        #                         "","Black or African American Race (%)","","White or Caucasian Race (%)",
+        #                         "","Native Hawaiian or Pacific Islander Race (%)","",
+        #                         "Alaska Native or American Indian Race (%)","","Unknown Race (%)","",
+        #                         "Prefer not to Answer Race (%)","")
+        # tabone_combined<-tabone_combined[tabone_combined$`Variable Level` %notin% c("No","Prefer not to Answer"),]
+        # data<-tabone_combined
+      }
+    })
+    data
+  })
+  
+  # ======= SHOW DATA IN A TABLE ======= #
+  
+  # Show the data in a table
+  output$dataTable<-renderTable(
+    {
+      LIIA_abb()
+    },
+    rownames=FALSE
+  )
+  
+  # Allow user to download the data, simply save as .csv file
+  output$downloadData<-downloadHandler(
+    filename=function(){
+      "LIIA_data.csv"
+    },
+    
+    content=function(file){
+      write.table(x=LIIA_abb(),file=file,quote=FALSE,row.names=FALSE)
+    }
+  )
+})
