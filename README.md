@@ -12,8 +12,10 @@ To run the app locally, it is straightforward to initiate an instance of LIIA_Sh
 2) Make sure `shiny` is installed and loaded:
 
 ```r
-if(!require(shiny)) install.packages('shiny', repos = "https://cran.rstudio.com")
-library(shiny)
+list.of.packages<-c('base','tidyverse','plyr','magrittr','qwraps2','tableone',
+                    'shiny','shinyjs','shinythemes','REDCapExporter')
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages, repos='http://cran.us.r-project.org')
 ```
 
 3) Run the code: 
