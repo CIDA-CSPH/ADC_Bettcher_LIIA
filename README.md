@@ -9,7 +9,7 @@ The LIIA `shiny` application provides a streamlined way to access and summarize 
 To run the app locally, it is straightforward to initiate an instance of LIIA_Shiny using the 3 steps below (it is assumed that R is installed and an internet connection is available):
 
 1) Open an R session
-2) Make sure `shiny` is installed and loaded:
+2) Make sure dependencies are installed and loaded:
 
 ```r
 list.of.packages<-c('base','tidyverse','plyr','magrittr','qwraps2','tableone',
