@@ -222,7 +222,7 @@ getData<-function(redcap_api_token) {
                                   myData_final$time_diff<=395, "12 Month Survey",
                                 ifelse(myData_final$time_diff>=515 & 
                                          myData_final$time_diff<=575, "18 Month Survey",
-                                       ifelse(myData_final$time_diff>=669 & 
+                                       ifelse(myData_final$time_diff>=638 & 
                                                 myData_final$time_diff<=819,"2 Year Follow Up",
                                               ifelse(myData_final$time_diff>=820,"Overdue 2 Year Follow Up",NA)))))
   myData_final$next_appt_date<-ifelse(myData_final$next_appt=="6 Month Survey",as.Date(myData_final$lp_date)+180,
